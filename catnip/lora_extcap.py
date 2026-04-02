@@ -37,6 +37,8 @@ CTRL_NUM_SPREADFACTOR = 2
 CTRL_NUM_BANDWIDTH = 3
 CTRL_NUM_CODINGRATE = 4
 CTRL_NUM_TXPOWER = 5
+CTRL_NUM_PREAMBLE = 6
+CTRL_NUM_SYNCWORD = 7
 
 # Control commands
 CTRL_CMD_INITIALIZED = 0
@@ -199,6 +201,17 @@ class MinimalExtcap:
             help="TX Power in dBm",
         )
         parser.add_argument(
+            "--preamble",
+            type=int,
+            default=8,
+            help="Preamble length (symbols)",
+        )
+        parser.add_argument(
+            "--syncword",
+            default="0x2B",
+            help="LoRa sync word (hex, e.g. 0x2B for Meshtastic)",
+        )
+        parser.add_argument(
             "--log-level",
             default="INFO",
             choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
@@ -215,6 +228,8 @@ class MinimalExtcap:
         self.args.bandwidth = int(self.args.bandwidth)
         self.args.coding_rate = int(self.args.coding_rate)
         self.args.tx_power = int(self.args.tx_power)
+        self.args.preamble = int(self.args.preamble)
+        self.args.syncword = str(self.args.syncword)
 
         self.logger.setLevel(self.args.log_level)
 
@@ -259,6 +274,14 @@ class MinimalExtcap:
         lines.append(
             "control {number=%d}{type=string}{display=TX Power (dBm)}{tooltip=TX Power}"
             % CTRL_NUM_TXPOWER
+        )
+        lines.append(
+            "control {number=%d}{type=string}{display=Preamble Length}{tooltip=Preamble length in symbols}"
+            % CTRL_NUM_PREAMBLE
+        )
+        lines.append(
+            "control {number=%d}{type=string}{display=Sync Word}{tooltip=LoRa sync word (hex, e.g. 0x2B)}"
+            % CTRL_NUM_SYNCWORD
         )
 
         # Default frequency
@@ -347,9 +370,23 @@ class MinimalExtcap:
             "{tooltip=Transmit power in dBm}"
         )
 
+        # Preamble Length
+        lines.append(
+            "arg {number=7}{call=--preamble}{type=integer}{default=8}"
+            "{display=Preamble Length}"
+            "{tooltip=Preamble length in symbols (Meshtastic default: 8)}"
+        )
+
+        # Sync Word
+        lines.append(
+            "arg {number=8}{call=--syncword}{type=string}{default=0x2B}"
+            "{display=Sync Word}"
+            "{tooltip=LoRa sync word in hex (Meshtastic: 0x2B)}"
+        )
+
         # Log Level
         lines.append(
-            "arg {number=7}{call=--log-level}{type=selector}{display=Log Level}"
+            "arg {number=9}{call=--log-level}{type=selector}{display=Log Level}"
             "{tooltip=Set the log level}{default=INFO}{group=Logger}"
         )
 
@@ -411,10 +448,10 @@ class MinimalExtcap:
             lines.append(f"value {{arg=5}}{{value={i}}}{{display=4/{i}}}{default}")
 
         # Logger values
-        lines.append("value {arg=7}{value=DEBUG}{display=DEBUG}")
-        lines.append("value {arg=7}{value=INFO}{display=INFO}{default=true}")
-        lines.append("value {arg=7}{value=WARNING}{display=WARNING}")
-        lines.append("value {arg=7}{value=ERROR}{display=ERROR}")
+        lines.append("value {arg=9}{value=DEBUG}{display=DEBUG}")
+        lines.append("value {arg=9}{value=INFO}{display=INFO}{default=true}")
+        lines.append("value {arg=9}{value=WARNING}{display=WARNING}")
+        lines.append("value {arg=9}{value=ERROR}{display=ERROR}")
 
         return "\n".join(lines)
 
@@ -465,16 +502,23 @@ class MinimalExtcap:
         self.shell_connection.send_command(snifferSxCmd.set_sf(self.args.spread_factor))
         self.shell_connection.send_command(snifferSxCmd.set_cr(self.args.coding_rate))
         self.shell_connection.send_command(snifferSxCmd.set_power(self.args.tx_power))
+        self.shell_connection.send_command(f"lora_preamble {self.args.preamble}")
+        self.shell_connection.send_command(snifferSxCmd.set_syncword(self.args.syncword))
 
         # Apply configuration
-        self.shell_connection.send_command(snifferSxCmd.apply())
+        self.shell_connection.send_command(snifferSxCmd.apply_config())
         time.sleep(0.2)
 
         # Start streaming mode
         self.shell_connection.send_command(snifferSxCmd.start_streaming())
         self.logger.info("LoRa streaming started")
 
-        header_flag = False
+        # Wait for the pipe reader (e.g. cat / sshdump) to connect, then write
+        # the PCAP global header immediately so Wireshark sees a valid stream
+        # before any over-the-air packets arrive.
+        pipe.ready_event.wait(timeout=10)
+        pipe.write_packet(get_global_header(148))
+        header_flag = True
         self.writeControlMessage(
             CTRL_CMD_SET, CTRL_NUM_BANDWIDTH, str(self.args.bandwidth)
         )
@@ -595,7 +639,7 @@ class MinimalExtcap:
                         self.shell_connection.send_command(
                             snifferSxCmd.set_freq(self.args.frequency)
                         )
-                        self.shell_connection.send_command(snifferSxCmd.apply())
+                        self.shell_connection.send_command(snifferSxCmd.apply_config())
                         self.shell_connection.send_command(
                             snifferSxCmd.start_streaming()
                         )
@@ -610,7 +654,7 @@ class MinimalExtcap:
                         self.shell_connection.send_command(
                             snifferSxCmd.set_sf(self.args.spread_factor)
                         )
-                        self.shell_connection.send_command(snifferSxCmd.apply())
+                        self.shell_connection.send_command(snifferSxCmd.apply_config())
                         self.shell_connection.send_command(
                             snifferSxCmd.start_streaming()
                         )
@@ -627,7 +671,7 @@ class MinimalExtcap:
                         self.shell_connection.send_command(
                             snifferSxCmd.set_bw(self.args.bandwidth)
                         )
-                        self.shell_connection.send_command(snifferSxCmd.apply())
+                        self.shell_connection.send_command(snifferSxCmd.apply_config())
                         self.shell_connection.send_command(
                             snifferSxCmd.start_streaming()
                         )
@@ -642,7 +686,7 @@ class MinimalExtcap:
                         self.shell_connection.send_command(
                             snifferSxCmd.set_cr(self.args.coding_rate)
                         )
-                        self.shell_connection.send_command(snifferSxCmd.apply())
+                        self.shell_connection.send_command(snifferSxCmd.apply_config())
                         self.shell_connection.send_command(
                             snifferSxCmd.start_streaming()
                         )
@@ -657,12 +701,42 @@ class MinimalExtcap:
                         self.shell_connection.send_command(
                             snifferSxCmd.set_power(self.args.tx_power)
                         )
-                        self.shell_connection.send_command(snifferSxCmd.apply())
+                        self.shell_connection.send_command(snifferSxCmd.apply_config())
                         self.shell_connection.send_command(
                             snifferSxCmd.start_streaming()
                         )
                     self.writeControlMessage(
                         CTRL_CMD_SET, CTRL_NUM_TXPOWER, str(self.args.tx_power)
+                    )
+
+                elif cmd == CTRL_CMD_SET and controlNum == CTRL_NUM_PREAMBLE:
+                    self.logger.info("Changing Preamble Length: %s" % payload)
+                    self.args.preamble = int(payload)
+                    if self.shell_connection:
+                        self.shell_connection.send_command(
+                            f"lora_preamble {self.args.preamble}"
+                        )
+                        self.shell_connection.send_command(snifferSxCmd.apply_config())
+                        self.shell_connection.send_command(
+                            snifferSxCmd.start_streaming()
+                        )
+                    self.writeControlMessage(
+                        CTRL_CMD_SET, CTRL_NUM_PREAMBLE, str(self.args.preamble)
+                    )
+
+                elif cmd == CTRL_CMD_SET and controlNum == CTRL_NUM_SYNCWORD:
+                    self.logger.info("Changing Sync Word: %s" % payload)
+                    self.args.syncword = str(payload)
+                    if self.shell_connection:
+                        self.shell_connection.send_command(
+                            snifferSxCmd.set_syncword(self.args.syncword)
+                        )
+                        self.shell_connection.send_command(snifferSxCmd.apply_config())
+                        self.shell_connection.send_command(
+                            snifferSxCmd.start_streaming()
+                        )
+                    self.writeControlMessage(
+                        CTRL_CMD_SET, CTRL_NUM_SYNCWORD, str(self.args.syncword)
                     )
 
         except EOFError:
@@ -717,5 +791,9 @@ class MinimalExtcap:
         self.controlWriteStream.write(msg)
 
 
-if __name__ == "__main__":
+def main():
     sys.exit(MinimalExtcap().main())
+
+
+if __name__ == "__main__":
+    main()
